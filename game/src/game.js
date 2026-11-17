@@ -1,21 +1,24 @@
 // The game itself: state machine (title, playing, upgrade choice, paused,
-// game over), the wave flow, collisions, scoring, combo and pickups. The
-// fixed step is driven by main.js; rendering lives in render.js.
+// victory, game over), the wave flow, collisions, scoring, combo and
+// pickups. Clearing the final wave wins the run. The fixed step is driven
+// by main.js; rendering lives in render.js.
 
-import { COMBO, JUICE, PALETTE, PICKUPS, PLAYER, VIEW_H, VIEW_W, WAVES } from './config.js';
+import { COMBO, DRONE, JUICE, NOVA, PALETTE, PICKUPS, PLAYER, VIEW_H, VIEW_W, WAVES } from './config.js';
 import { RNG } from './random.js';
 import { Particles } from './particles.js';
-import { createPlayer, updatePlayer } from './player.js';
-import { edgeSpawnPoint, makeEnemy, updateEnemies, waveComposition } from './enemies.js';
+import { createPlayer, droneSlots, updatePlayer } from './player.js';
+import { edgeSpawnPoint, makeEnemy, promoteToPrime, updateEnemies, waveComposition } from './enemies.js';
 import { applyUpgrade, defaultMods, rollChoices } from './upgrades.js';
 import {
   cardRect,
+  drawAcquiredBanner,
   drawGameOver,
   drawHUD,
   drawMuteButton,
   drawPaused,
   drawTitle,
   drawUpgradeChoice,
+  drawVictory,
   drawWaveBanner,
   drawWorld,
   LAYOUT,
@@ -45,9 +48,16 @@ export class Game {
     this.bannerAge = 0;
     this.upgradeAge = 0;
     this.overAge = 0;
+    this.victoryAge = 0;
     this.deathTimer = 0;
     this.newBest = false;
     this.titleDrift = 0;
+    this.acquiredText = '';
+    this.acquiredLeft = 0;
+    this.comboTimer = 0;
+    this.droneAngle = 0;
+    this.droneTimer = 0;
+    this.secondWindUsed = false;
   }
 
   resetRun() {
@@ -68,6 +78,7 @@ export class Game {
     this.comboMult = 1;
     this.comboPop = 0;
     this.maxComboMult = 1;
+    this.comboTimer = 0;
     this.shields = 0;
     this.runTime = 0;
     this.spawnQueue = [];
@@ -81,6 +92,12 @@ export class Game {
     this.deathTimer = 0;
     this.overAge = 0;
     this.upgradeAge = 0;
+    this.victoryAge = 0;
+    this.acquiredText = '';
+    this.acquiredLeft = 0;
+    this.droneAngle = 0;
+    this.droneTimer = 0;
+    this.secondWindUsed = false;
   }
 
   startRun() {
@@ -104,6 +121,7 @@ export class Game {
     this.comboPop = Math.max(0, this.comboPop - dt * 3);
     this.muzzle = Math.max(0, this.muzzle - dt);
     this.shake = Math.max(0, this.shake - dt * 34);
+    this.acquiredLeft = Math.max(0, this.acquiredLeft - dt);
     if (this.bannerLeft > 0) {
       this.bannerLeft -= dt;
       this.bannerAge += dt;
@@ -153,6 +171,8 @@ export class Game {
         const upgrade = this.choices[picked];
         applyUpgrade(this, upgrade);
         this.upgradeGlyphs.push(upgrade.glyph);
+        this.acquiredText = `${upgrade.name} ACQUIRED`;
+        this.acquiredLeft = 2.4;
         this.sound.upgrade();
         this.state = 'playing';
         this.startWave(this.wave + 1);
@@ -184,12 +204,43 @@ export class Game {
       return;
     }
 
+    if (this.state === 'victory') {
+      this.victoryAge += dt;
+      this.particles.update(dt);
+      // Celebration sparks drift up while the results screen stands.
+      if (Math.random() < dt * 7) {
+        this.particles.burst(
+          this.rng.range(80, VIEW_W - 80),
+          this.rng.range(90, 300),
+          this.rng.pick([PALETTE.gold, PALETTE.player, PALETTE.chaser, PALETTE.pickup]),
+          10, 190, 0.8, 3,
+        );
+      }
+      const again = this.input.pressed('KeyR') || this.input.pressed('Enter')
+        || (this.input.justClicked && pointIn(LAYOUT.victoryButton, this.input.clickX, this.input.clickY));
+      if (again && this.victoryAge > 0.5) {
+        this.sound.uiClick();
+        this.startRun();
+      }
+      return;
+    }
+
     // --- playing ---
     if (this.input.pressed('KeyP') || this.input.pressed('Escape')) {
       this.state = 'paused';
       return;
     }
     this.runTime += dt;
+
+    // Combo decay: after a few kill-less seconds the counter drains away,
+    // so the multiplier has to be earned again instead of idling at x5.
+    if (this.comboKills > 0) {
+      this.comboTimer += dt;
+      if (this.comboTimer > COMBO.decayGrace) {
+        this.comboKills = Math.max(0, this.comboKills - COMBO.drainRate * dt);
+        this.comboMult = Math.min(COMBO.maxMult, 1 + Math.floor(this.comboKills / COMBO.step));
+      }
+    }
 
     // Death cinematic: particles only, then the results screen.
     if (!this.player.alive) {
@@ -213,11 +264,62 @@ export class Game {
     updatePlayer(this, dt);
     this.updateSpawning(dt);
     updateEnemies(this, dt);
+    this.updateDrones(dt);
     this.updateBullets(dt, true);
     this.updateEnemyBullets(dt);
     this.updatePickups(dt);
     this.particles.update(dt);
     this.checkWaveClear();
+  }
+
+  // Orbit drones: circle the skiff and shoot the nearest hostile in range.
+  updateDrones(dt) {
+    if (this.mods.drones <= 0 || !this.player.alive) return;
+    this.droneAngle += DRONE.orbitSpeed * dt;
+    this.droneTimer -= dt;
+    if (this.droneTimer > 0 || this.enemies.length === 0) return;
+    this.droneTimer = DRONE.fireInterval;
+    const slots = droneSlots(this.player, this.mods.drones, this.droneAngle);
+    for (const slot of slots) {
+      let target = null;
+      let bestDist = DRONE.range;
+      for (const e of this.enemies) {
+        if (e.spawnAge < WAVES.spawnTelegraph) continue;
+        const dist = Math.hypot(e.x - slot.x, e.y - slot.y);
+        if (dist < bestDist) {
+          bestDist = dist;
+          target = e;
+        }
+      }
+      if (!target) continue;
+      const a = Math.atan2(target.y - slot.y, target.x - slot.x);
+      this.bullets.push({
+        x: slot.x,
+        y: slot.y,
+        vx: Math.cos(a) * DRONE.bulletSpeed,
+        vy: Math.sin(a) * DRONE.bulletSpeed,
+        radius: 4,
+        damage: DRONE.damage,
+        life: 0.8,
+        pierce: 0,
+        struck: null,
+      });
+      this.particles.trail(slot.x, slot.y, PALETTE.drone, 2);
+    }
+  }
+
+  // The Nova Dash shockwave: wounds everything near the dash origin.
+  detonateNova(x, y, level) {
+    const radius = NOVA.baseRadius + NOVA.radiusPerLevel * (level - 1);
+    this.particles.ring(x, y, PALETTE.player, radius + 30, 0.45);
+    this.particles.burst(x, y, PALETTE.player, 26, 380, 0.5, 3);
+    this.shake = Math.min(24, this.shake + 6);
+    this.sound.explosion(false);
+    for (const e of [...this.enemies]) {
+      if (e.spawnAge < WAVES.spawnTelegraph) continue;
+      if (Math.hypot(e.x - x, e.y - y) > radius + e.radius) continue;
+      this.damageEnemy(e, NOVA.damage, e.x, e.y);
+    }
   }
 
   updateSpawning(dt) {
@@ -232,6 +334,7 @@ export class Game {
     const type = this.spawnQueue.shift();
     const at = edgeSpawnPoint(this.rng);
     const enemy = makeEnemy(type, at.x, at.y, this.wave);
+    if (type === 'warden' && this.wave === WAVES.finalWave) promoteToPrime(enemy);
     this.enemies.push(enemy);
     this.particles.ring(at.x, at.y, type === 'warden' ? PALETTE.warden : PALETTE.textDim, 40, 0.5);
   }
@@ -250,11 +353,21 @@ export class Game {
       for (let j = this.enemies.length - 1; j >= 0; j -= 1) {
         const e = this.enemies[j];
         if (e.spawnAge < WAVES.spawnTelegraph) continue;
+        if (b.struck && b.struck.has(e)) continue;
         const dx = b.x - e.x;
         const dy = b.y - e.y;
         if (dx * dx + dy * dy > (b.radius + e.radius) * (b.radius + e.radius)) continue;
-        this.bullets.splice(i, 1);
-        this.damageEnemy(e, b.damage, b.x, b.y);
+        // Lance Rounds: a bolt with pierce left keeps flying after a hit,
+        // but never wounds the same enemy twice.
+        if (b.pierce > 0) {
+          if (!b.struck) b.struck = new Set();
+          b.struck.add(e);
+          b.pierce -= 1;
+          this.damageEnemy(e, b.damage, b.x, b.y);
+        } else {
+          this.bullets.splice(i, 1);
+          this.damageEnemy(e, b.damage, b.x, b.y);
+        }
         break;
       }
     }
@@ -272,6 +385,7 @@ export class Game {
     if (index >= 0) this.enemies.splice(index, 1);
     this.kills += 1;
     this.comboKills += 1;
+    this.comboTimer = 0;
     const prevMult = this.comboMult;
     this.comboMult = Math.min(COMBO.maxMult, 1 + Math.floor(this.comboKills / COMBO.step));
     this.maxComboMult = Math.max(this.maxComboMult, this.comboMult);
@@ -282,9 +396,13 @@ export class Game {
     const gained = e.score * this.comboMult;
     this.score += gained;
     this.particles.floater(e.x, e.y - e.radius - 6, `+${gained}`, this.comboMult > 1 ? PALETTE.gold : '#e0f2fe', 15 + this.comboMult * 2);
-    const colors = { chaser: PALETTE.chaser, shooter: PALETTE.shooter, splitter: PALETTE.splitter, mini: PALETTE.mini, warden: PALETTE.warden };
+    const colors = { chaser: PALETTE.chaser, shooter: PALETTE.shooter, splitter: PALETTE.splitter, mini: PALETTE.mini, lancer: PALETTE.lancer, warden: PALETTE.warden };
     this.particles.burst(e.x, e.y, colors[e.type], e.type === 'warden' ? 60 : 20, e.type === 'warden' ? 420 : 300, 0.6, 3.5);
     this.particles.ring(e.x, e.y, colors[e.type], e.type === 'warden' ? 160 : 60, 0.4);
+    if (e.prime) {
+      this.particles.floater(e.x, e.y - e.radius - 10, 'WARDEN PRIME DOWN!', PALETTE.gold, 22);
+      this.particles.ring(e.x, e.y, PALETTE.gold, 220, 0.7);
+    }
     this.sound.explosion(e.type === 'warden');
     this.hitStopLeft = e.type === 'warden' ? 0.09 : JUICE.hitStop;
     this.shake = Math.min(24, this.shake + (e.type === 'warden' ? JUICE.shakeOnWardenDeath : JUICE.shakeOnKill));
@@ -374,6 +492,17 @@ export class Game {
     this.particles.ring(x, y, PALETTE.danger, 80, 0.4);
     this.sound.playerHit();
     if (p.hearts <= 0) {
+      // Second Wind: once per run, the skiff pulls itself back together.
+      if (this.mods.secondWind && !this.secondWindUsed) {
+        this.secondWindUsed = true;
+        p.hearts = 3;
+        p.invulnLeft = 2.0;
+        this.particles.floater(p.x, p.y - 52, 'SECOND WIND!', PALETTE.gold, 24);
+        this.particles.ring(x, y, PALETTE.gold, 150, 0.6);
+        this.particles.burst(x, y, PALETTE.gold, 40, 380, 0.7, 3.5);
+        this.sound.revive();
+        return;
+      }
       p.alive = false;
       this.deathTimer = 1.0;
       this.particles.burst(x, y, PALETTE.player, 70, 460, 0.9, 4);
@@ -433,11 +562,40 @@ export class Game {
 
   checkWaveClear() {
     if (this.spawnQueue.length === 0 && this.enemies.length === 0 && this.player.alive) {
+      if (this.wave >= WAVES.finalWave) {
+        this.winRun();
+        return;
+      }
       this.choices = rollChoices(this.rng, this.owned);
       this.upgradeAge = 0;
       this.state = 'upgrade';
       this.particles.floater(VIEW_W / 2, 180, 'WAVE CLEAR', PALETTE.gold, 22);
     }
+  }
+
+  // The run is won: record the best score, celebrate, show the results.
+  winRun() {
+    this.state = 'victory';
+    this.victoryAge = 0;
+    if (this.score > this.best) {
+      this.best = this.score;
+      this.newBest = true;
+      try {
+        window.localStorage.setItem('neon-drift-best', String(this.best));
+      } catch {
+        // Storage unavailable: the best score just lives for this session.
+      }
+    }
+    this.sound.victory();
+    for (let i = 0; i < 5; i += 1) {
+      this.particles.burst(
+        this.rng.range(140, VIEW_W - 140),
+        this.rng.range(120, 420),
+        this.rng.pick([PALETTE.gold, PALETTE.player, PALETTE.pickup, PALETTE.chaser]),
+        26, 320, 0.9, 3.5,
+      );
+    }
+    this.particles.ring(this.player.x, this.player.y, PALETTE.gold, 200, 0.8);
   }
 
   render(ctx) {
@@ -451,9 +609,11 @@ export class Game {
       drawWorld(ctx, this, this.time);
       drawHUD(ctx, this, this.time);
       drawWaveBanner(ctx, this);
+      drawAcquiredBanner(ctx, this);
       if (this.state === 'upgrade') drawUpgradeChoice(ctx, this);
       if (this.state === 'paused') drawPaused(ctx, this);
       if (this.state === 'over') drawGameOver(ctx, this);
+      if (this.state === 'victory') drawVictory(ctx, this);
     }
     ctx.restore();
     // The mute button floats above every screen, including the title.

@@ -1,6 +1,7 @@
 // Neon Drift boot: canvas, input, sound, the fixed-step loop, and the
-// screenshot mode (?shot=start|action|upgrade|over&seed=n). The loop runs the
-// simulation at 60 fixed steps a second and renders every animation frame.
+// screenshot mode (?shot=start|action|upgrade|over|victory&seed=n). The loop
+// runs the simulation at 60 fixed steps a second and renders every
+// animation frame.
 
 import { Input } from './input.js';
 import { Sound } from './audio.js';

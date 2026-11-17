@@ -23,8 +23,13 @@ export const PALETTE = {
   splitter: '#c084fc',
   splitterCore: '#a855f7',
   mini: '#f9a8d4',
+  lancer: '#a3e635',
+  lancerCore: '#4d7c0f',
   warden: '#fb7185',
   wardenCore: '#f43f5e',
+  wardenRage: '#ff2d55',
+  wardenRageCore: '#ffd166',
+  drone: '#67e8f9',
   enemyBullet: '#fda4af',
   pickup: '#6ee7b7',
   heart: '#fb7185',
@@ -62,7 +67,8 @@ export const ENEMIES = {
   shooter: { radius: 17, hp: 3, speed: 96, score: 80, contact: 1, holdRange: 280, fireInterval: 2.1, bulletSpeed: 300 },
   splitter: { radius: 26, hp: 6, speed: 62, score: 120, contact: 1, children: 3 },
   mini: { radius: 10, hp: 1, speed: 205, score: 25, contact: 1, turn: 7.0 },
-  warden: { radius: 46, hp: 46, speed: 46, score: 800, contact: 1, burstInterval: 2.6, burstCount: 12, bulletSpeed: 210 },
+  lancer: { radius: 15, hp: 3, speed: 150, score: 100, contact: 1, approachRange: 330, telegraph: 0.6, chargeSpeed: 640, chargeTime: 0.42, recover: 0.8 },
+  warden: { radius: 46, hp: 46, speed: 46, score: 800, contact: 1, burstInterval: 2.6, burstCount: 12, bulletSpeed: 210, rageAt: 0.5, rageSpeed: 66, rageBurstInterval: 1.9, spiralInterval: 0.11, spiralSpeed: 235 },
 };
 
 export const WAVES = {
@@ -73,6 +79,10 @@ export const WAVES = {
   spawnInterval: 0.55,
   spawnTelegraph: 0.7,
   bossEvery: 5,
+  finalWave: 10, // clearing this wave wins the run
+  primeHpMult: 1.9, // the final wave's Warden Prime is tougher and bigger
+  primeRadius: 54,
+  primeScore: 2000,
   hpGrowth: 0.09, // +9% enemy hp per wave, rounded up at spawn
   speedGrowth: 0.022, // +2.2% enemy speed per wave, capped below
   speedCap: 1.55,
@@ -82,6 +92,22 @@ export const COMBO = {
   step: 8, // kills per multiplier step
   maxMult: 5,
   decayGrace: 6, // seconds without a kill before the combo counter drains
+  drainRate: 4, // combo kills lost per second once the grace runs out
+};
+
+export const DRONE = {
+  orbitRadius: 54,
+  orbitSpeed: 2.6,
+  fireInterval: 0.55,
+  bulletSpeed: 720,
+  range: 430,
+  damage: 1,
+};
+
+export const NOVA = {
+  baseRadius: 115,
+  radiusPerLevel: 45,
+  damage: 2,
 };
 
 export const PICKUPS = {

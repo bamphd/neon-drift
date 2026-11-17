@@ -1,8 +1,9 @@
 // The player skiff: movement, dash with invulnerability, and firing. The
 // update step reads input; the draw step renders the ship, its aim line and
-// its dash trail.
+// its dash trail. Orbit drones live here too: their slots are computed from
+// the skiff's position so the renderer and the simulation always agree.
 
-import { ARENA_MARGIN, PALETTE, PLAYER, VIEW_H, VIEW_W } from './config.js';
+import { ARENA_MARGIN, DRONE, PALETTE, PLAYER, VIEW_H, VIEW_W } from './config.js';
 
 export function createPlayer(x, y) {
   return {
@@ -74,6 +75,7 @@ export function updatePlayer(state, dt) {
       p.invulnLeft = Math.max(p.invulnLeft, PLAYER.dashInvuln);
       state.particles.ring(p.x, p.y, PALETTE.player, 46, 0.3);
       state.sound.dash();
+      if (mods.novaDash > 0) state.detonateNova(p.x, p.y, mods.novaDash);
     }
   }
 
@@ -98,6 +100,8 @@ export function updatePlayer(state, dt) {
         radius: PLAYER.bulletRadius,
         damage: mods.damage,
         life: PLAYER.bulletLife,
+        pierce: mods.pierce,
+        struck: null, // enemies this bolt already hit, so it never hits one twice
       });
     }
     state.muzzle = 0.06;
@@ -143,6 +147,48 @@ export function drawPlayer(ctx, p, time) {
   ctx.fillStyle = PALETTE.playerCore;
   ctx.beginPath();
   ctx.arc(2, 0, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// Orbit slots for the skiff's drones: evenly spaced on a ring around the
+// player, rotating with the run's drone angle.
+export function droneSlots(player, count, angle) {
+  const slots = [];
+  for (let i = 0; i < count; i += 1) {
+    const a = angle + (i / Math.max(1, count)) * Math.PI * 2;
+    slots.push({
+      x: player.x + Math.cos(a) * DRONE.orbitRadius,
+      y: player.y + Math.sin(a) * DRONE.orbitRadius,
+    });
+  }
+  return slots;
+}
+
+// A drone: a small glowing satellite with a spinning ring.
+export function drawDrone(ctx, x, y, time) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.shadowColor = PALETTE.drone;
+  ctx.shadowBlur = 12;
+  ctx.strokeStyle = PALETTE.drone;
+  ctx.lineWidth = 2;
+  ctx.fillStyle = 'rgba(8, 20, 40, 0.95)';
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.save();
+  ctx.rotate(time * 4);
+  ctx.strokeStyle = 'rgba(103, 232, 249, 0.7)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 13, 5, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ecfeff';
+  ctx.beginPath();
+  ctx.arc(0, 0, 3, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }

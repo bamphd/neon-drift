@@ -129,6 +129,28 @@ export class Sound {
     this.tone({ type: 'sine', from: 160, to: 30, duration: 1.1, volume: 0.3, delay: 0.1 });
   }
 
+  // The Warden's rage break: a low snarl that rises into a shriek.
+  enrage() {
+    this.tone({ type: 'sawtooth', from: 90, to: 420, duration: 0.5, volume: 0.34 });
+    this.noise({ duration: 0.4, volume: 0.3, filterFrom: 900, filterTo: 2400 });
+    this.tone({ type: 'square', from: 700, to: 1400, duration: 0.25, volume: 0.14, delay: 0.3 });
+  }
+
+  // The victory fanfare: a bright rising arpeggio with a held top note.
+  victory() {
+    const notes = [523, 659, 784, 1047, 1319];
+    notes.forEach((note, i) => {
+      this.tone({ type: 'triangle', from: note, duration: i === notes.length - 1 ? 0.6 : 0.13, volume: 0.32, delay: i * 0.11 });
+    });
+    this.tone({ type: 'sine', from: 262, duration: 0.7, volume: 0.2, delay: 0.1 });
+  }
+
+  // Second Wind: a warm swell as the skiff pulls itself back together.
+  revive() {
+    this.tone({ type: 'sine', from: 220, to: 660, duration: 0.45, volume: 0.3 });
+    this.tone({ type: 'triangle', from: 440, to: 880, duration: 0.4, volume: 0.24, delay: 0.15 });
+  }
+
   uiClick() {
     this.tone({ type: 'sine', from: 660, to: 880, duration: 0.06, volume: 0.2 });
   }

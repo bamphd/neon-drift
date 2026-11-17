@@ -1,6 +1,8 @@
 // Enemy types, wave composition, movement AI and drawing. Each type has one
 // clear behaviour: chasers hunt, shooters keep range and fire, splitters are
-// slow walls that burst into minis, and the warden is the wave-5 boss.
+// slow walls that burst into minis, lancers telegraph and charge in a line,
+// and the warden is the wave-5 boss with a second enraged phase. The final
+// wave fields the Warden Prime, a bigger and tougher warden.
 
 import { ARENA_MARGIN, ENEMIES, PALETTE, VIEW_H, VIEW_W, WAVES } from './config.js';
 
@@ -9,6 +11,7 @@ export const ENEMY_COLORS = {
   shooter: PALETTE.shooter,
   splitter: PALETTE.splitter,
   mini: PALETTE.mini,
+  lancer: PALETTE.lancer,
   warden: PALETTE.warden,
 };
 
@@ -17,6 +20,7 @@ export const ENEMY_CORES = {
   shooter: PALETTE.shooterCore,
   splitter: PALETTE.splitterCore,
   mini: PALETTE.mini,
+  lancer: PALETTE.lancerCore,
   warden: PALETTE.wardenCore,
 };
 
@@ -49,17 +53,47 @@ export function makeEnemy(type, x, y, wave) {
     strafeTimer: 1 + Math.random() * 1.5,
     spawnAge: 0, // telegraph period: harmless and fading in
     wobble: Math.random() * Math.PI * 2,
+    // Warden rage phase: 1 is the opening pattern, 2 is the enraged spiral.
+    phase: 1,
+    spiralTimer: 0,
+    spiralAngle: Math.random() * Math.PI * 2,
+    prime: false,
+    // Lancer charge cycle: approach, aim, charge, recover.
+    chargeMode: 'approach',
+    chargeTimer: 0.5 + Math.random() * 0.8,
+    chargeDirX: 1,
+    chargeDirY: 0,
   };
 }
 
-// Which types a wave fields. Early waves teach one type at a time; later
-// waves mix all three, and every 5th wave is a warden plus escorts.
+// The final wave's boss: a bigger, tougher Warden Prime worth far more.
+export function promoteToPrime(e) {
+  e.prime = true;
+  e.radius = WAVES.primeRadius;
+  e.maxHp = Math.ceil(e.maxHp * WAVES.primeHpMult);
+  e.hp = e.maxHp;
+  e.score = WAVES.primeScore;
+  e.speed *= 1.15;
+  return e;
+}
+
+// Which types a wave fields. Early waves teach one type at a time; the
+// lancer joins from wave 3, every 5th wave is a warden plus escorts, and
+// the final wave is the Warden Prime with a full honour guard.
 export function waveComposition(wave, rng) {
   const list = [];
+  if (wave === WAVES.finalWave) {
+    list.push('warden');
+    list.push('lancer', 'lancer', 'shooter', 'shooter', 'splitter', 'chaser');
+    return list;
+  }
   if (wave % WAVES.bossEvery === 0) {
     list.push('warden');
     const escorts = 2 + Math.floor(wave / WAVES.bossEvery);
-    for (let i = 0; i < escorts; i += 1) list.push(rng.chance(0.6) ? 'chaser' : 'shooter');
+    for (let i = 0; i < escorts; i += 1) {
+      const roll = rng.next();
+      list.push(roll < 0.45 ? 'chaser' : roll < 0.75 ? 'shooter' : 'lancer');
+    }
     return list;
   }
   const count = Math.min(WAVES.maxAlive, WAVES.baseCount + WAVES.perWave * (wave - 1));
@@ -67,9 +101,10 @@ export function waveComposition(wave, rng) {
     const roll = rng.next();
     if (wave === 1) list.push('chaser');
     else if (wave === 2) list.push(roll < 0.7 ? 'chaser' : 'shooter');
-    else if (roll < 0.45) list.push('chaser');
-    else if (roll < 0.72) list.push('shooter');
-    else list.push('splitter');
+    else if (roll < 0.36) list.push('chaser');
+    else if (roll < 0.6) list.push('shooter');
+    else if (roll < 0.8) list.push('splitter');
+    else list.push('lancer');
   }
   return list;
 }
@@ -165,27 +200,102 @@ export function updateEnemies(state, dt) {
         });
         state.particles.burst(e.x + nx * e.radius, e.y + ny * e.radius, PALETTE.shooter, 4, 120, 0.25, 2);
       }
+    } else if (e.type === 'lancer') {
+      const tune = ENEMIES.lancer;
+      if (e.chargeMode === 'approach') {
+        steerTowards(e, player.x, player.y, dt, 4.2);
+        e.vx = Math.cos(e.angle) * e.speed;
+        e.vy = Math.sin(e.angle) * e.speed;
+        e.chargeTimer -= dt;
+        if (dist < tune.approachRange && e.chargeTimer <= 0) {
+          e.chargeMode = 'aim';
+          e.chargeTimer = tune.telegraph;
+        }
+      } else if (e.chargeMode === 'aim') {
+        // Telegraph: brake to a hover, track the player, flash bright.
+        e.vx *= 1 - Math.min(1, 6 * dt);
+        e.vy *= 1 - Math.min(1, 6 * dt);
+        e.angle = Math.atan2(dy, dx);
+        e.flash = 0.6;
+        e.chargeTimer -= dt;
+        if (e.chargeTimer <= 0) {
+          e.chargeMode = 'charge';
+          e.chargeTimer = tune.chargeTime;
+          e.chargeDirX = Math.cos(e.angle);
+          e.chargeDirY = Math.sin(e.angle);
+          state.particles.burst(e.x, e.y, PALETTE.lancer, 8, 180, 0.3, 2.5);
+          state.sound.dash();
+        }
+      } else if (e.chargeMode === 'charge') {
+        e.vx = e.chargeDirX * tune.chargeSpeed;
+        e.vy = e.chargeDirY * tune.chargeSpeed;
+        state.particles.trail(e.x, e.y, PALETTE.lancer, 3);
+        e.chargeTimer -= dt;
+        if (e.chargeTimer <= 0) {
+          e.chargeMode = 'recover';
+          e.chargeTimer = tune.recover;
+        }
+      } else {
+        // Recover: drift slowly, then rejoin the approach.
+        e.vx *= 1 - Math.min(1, 3 * dt);
+        e.vy *= 1 - Math.min(1, 3 * dt);
+        e.chargeTimer -= dt;
+        if (e.chargeTimer <= 0) {
+          e.chargeMode = 'approach';
+          e.chargeTimer = 0.4 + Math.random() * 0.9;
+        }
+      }
     } else if (e.type === 'warden') {
-      steerTowards(e, player.x, player.y, dt, 1.4);
+      const tune = ENEMIES.warden;
+      // Rage phase: at half health the Warden turns hotter, moves faster,
+      // bursts more often, and adds a rotating twin spiral.
+      if (e.phase === 1 && e.hp <= e.maxHp * tune.rageAt) {
+        e.phase = 2;
+        e.speed = tune.rageSpeed * (e.prime ? 1.15 : 1);
+        e.burstTimer = Math.min(e.burstTimer, 0.5);
+        state.particles.ring(e.x, e.y, PALETTE.wardenRage, 170, 0.6);
+        state.particles.burst(e.x, e.y, PALETTE.wardenRage, 34, 380, 0.6, 3.5);
+        state.particles.floater(e.x, e.y - e.radius - 14, e.prime ? 'PRIME ENRAGED!' : 'WARDEN ENRAGED!', PALETTE.wardenRage, 20);
+        state.sound.enrage();
+      }
+      steerTowards(e, player.x, player.y, dt, e.phase === 2 ? 1.9 : 1.4);
       e.vx = Math.cos(e.angle) * e.speed;
       e.vy = Math.sin(e.angle) * e.speed;
       e.burstTimer -= dt;
       if (e.burstTimer <= 0) {
-        e.burstTimer = ENEMIES.warden.burstInterval;
+        e.burstTimer = e.phase === 2 ? tune.rageBurstInterval : tune.burstInterval;
         const offset = Math.random() * Math.PI * 2;
-        for (let i = 0; i < ENEMIES.warden.burstCount; i += 1) {
-          const a = offset + (i / ENEMIES.warden.burstCount) * Math.PI * 2;
+        for (let i = 0; i < tune.burstCount; i += 1) {
+          const a = offset + (i / tune.burstCount) * Math.PI * 2;
           bullets.push({
             x: e.x + Math.cos(a) * (e.radius + 4),
             y: e.y + Math.sin(a) * (e.radius + 4),
-            vx: Math.cos(a) * ENEMIES.warden.bulletSpeed,
-            vy: Math.sin(a) * ENEMIES.warden.bulletSpeed,
+            vx: Math.cos(a) * tune.bulletSpeed,
+            vy: Math.sin(a) * tune.bulletSpeed,
             radius: 7,
             life: 4,
           });
         }
-        state.particles.ring(e.x, e.y, PALETTE.warden, 90, 0.45);
+        state.particles.ring(e.x, e.y, e.phase === 2 ? PALETTE.wardenRage : PALETTE.warden, 90, 0.45);
         state.sound.explosion(false);
+      }
+      if (e.phase === 2) {
+        e.spiralTimer -= dt;
+        if (e.spiralTimer <= 0) {
+          e.spiralTimer = tune.spiralInterval;
+          e.spiralAngle += 0.42;
+          for (const side of [0, Math.PI]) {
+            const a = e.spiralAngle + side;
+            bullets.push({
+              x: e.x + Math.cos(a) * (e.radius + 4),
+              y: e.y + Math.sin(a) * (e.radius + 4),
+              vx: Math.cos(a) * tune.spiralSpeed,
+              vy: Math.sin(a) * tune.spiralSpeed,
+              radius: 6,
+              life: 4,
+            });
+          }
+        }
       }
     }
     e.x += e.vx * dt;
@@ -209,14 +319,27 @@ function polygon(ctx, x, y, radius, sides, rotation) {
 }
 
 export function drawEnemy(ctx, e, time) {
-  const color = ENEMY_COLORS[e.type];
-  const core = ENEMY_CORES[e.type];
+  const enraged = e.type === 'warden' && e.phase === 2;
+  const color = enraged ? PALETTE.wardenRage : ENEMY_COLORS[e.type];
+  const core = enraged ? PALETTE.wardenRageCore : ENEMY_CORES[e.type];
   const fadeIn = Math.min(1, e.spawnAge / WAVES.spawnTelegraph);
+  // A lancer about to charge shows its aim line: fair warning, readable aim.
+  if (e.type === 'lancer' && e.chargeMode === 'aim' && fadeIn >= 1) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(163, 230, 53, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 8]);
+    ctx.beginPath();
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(e.angle) * 320, e.y + Math.sin(e.angle) * 320);
+    ctx.stroke();
+    ctx.restore();
+  }
   ctx.save();
   ctx.globalAlpha = 0.25 + 0.75 * fadeIn;
   ctx.translate(e.x, e.y);
   ctx.shadowColor = color;
-  ctx.shadowBlur = 16;
+  ctx.shadowBlur = enraged ? 26 : 16;
   ctx.strokeStyle = color;
   ctx.fillStyle = 'rgba(5, 8, 22, 0.85)';
   ctx.lineWidth = 2.5;
@@ -230,6 +353,27 @@ export function drawEnemy(ctx, e, time) {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
+  } else if (e.type === 'lancer') {
+    // A long needle dart: unmistakable next to the chaser's arrowhead.
+    ctx.rotate(e.angle);
+    ctx.beginPath();
+    ctx.moveTo(e.radius + 14, 0);
+    ctx.lineTo(-e.radius * 0.4, e.radius * 0.55);
+    ctx.lineTo(-e.radius * 0.9, e.radius * 0.95);
+    ctx.lineTo(-e.radius * 0.55, 0);
+    ctx.lineTo(-e.radius * 0.9, -e.radius * 0.95);
+    ctx.lineTo(-e.radius * 0.4, -e.radius * 0.55);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    if (e.chargeMode === 'charge') {
+      ctx.strokeStyle = '#ecfccb';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-e.radius, 0);
+      ctx.lineTo(e.radius + 8, 0);
+      ctx.stroke();
+    }
   } else if (e.type === 'shooter') {
     ctx.rotate(e.angle + Math.PI / 4 + Math.sin(time * 2 + e.wobble) * 0.08);
     polygon(ctx, 0, 0, e.radius, 4, 0);
@@ -244,13 +388,40 @@ export function drawEnemy(ctx, e, time) {
     polygon(ctx, 0, 0, e.radius * 0.55, 6, 0);
     ctx.stroke();
   } else if (e.type === 'warden') {
-    ctx.rotate(time * 0.35);
+    const spin = enraged ? 0.9 : 0.35;
+    ctx.rotate(time * spin);
     polygon(ctx, 0, 0, e.radius, 8, 0);
     ctx.fill();
     ctx.stroke();
-    ctx.rotate(-time * 0.7);
+    ctx.rotate(-time * spin * 2);
     polygon(ctx, 0, 0, e.radius * 0.62, 8, 0);
     ctx.stroke();
+    if (enraged) {
+      // Rage spikes: a jagged outer ring that spins against the hull.
+      ctx.rotate(time * spin * 3);
+      ctx.beginPath();
+      for (let i = 0; i < 12; i += 1) {
+        const a = (i / 12) * Math.PI * 2;
+        const r = i % 2 === 0 ? e.radius + 12 : e.radius + 3;
+        const px = Math.cos(a) * r;
+        const py = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+    if (e.prime) {
+      // The Prime wears a gold crown ring, so the final boss reads at once.
+      ctx.rotate(0);
+      ctx.strokeStyle = PALETTE.gold;
+      ctx.setLineDash([6, 6]);
+      ctx.lineDashOffset = -time * 24;
+      ctx.beginPath();
+      ctx.arc(0, 0, e.radius + 10, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
   ctx.shadowBlur = 0;
   const pulse = 1 + Math.sin(time * 5 + e.wobble) * 0.15;

@@ -2,14 +2,15 @@
 // the HUD, and every menu screen. Layout rectangles are exported so the game
 // logic can hit-test the same buttons the renderer draws.
 
-import { ARENA_MARGIN, PALETTE, VIEW_H, VIEW_W } from './config.js';
+import { ARENA_MARGIN, COMBO, PALETTE, VIEW_H, VIEW_W, WAVES } from './config.js';
 import { RNG } from './random.js';
 import { drawEnemy } from './enemies.js';
-import { drawPlayer } from './player.js';
+import { drawDrone, drawPlayer, droneSlots } from './player.js';
 
 export const LAYOUT = {
   startButton: { x: 490, y: 478, w: 300, h: 62 },
   restartButton: { x: 490, y: 556, w: 300, h: 60 },
+  victoryButton: { x: 490, y: 556, w: 300, h: 60 },
   resumeButton: { x: 490, y: 392, w: 300, h: 56 },
   pauseRestartButton: { x: 490, y: 460, w: 300, h: 56 },
   muteButton: { x: 1220, y: 676, w: 46, h: 30 },
@@ -195,18 +196,20 @@ export function drawWorld(ctx, state, time) {
   }
   ctx.restore();
   for (const e of state.enemies) drawEnemy(ctx, e, time);
-  // Player bullets.
+  // Player bullets. Lance Rounds draw longer and hotter, so the pierce
+  // upgrade reads in flight instead of only on its card.
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (const b of state.bullets) {
     const angle = Math.atan2(b.vy, b.vx);
+    const piercing = b.pierce > 0;
     ctx.save();
     ctx.translate(b.x, b.y);
     ctx.rotate(angle);
-    ctx.shadowColor = PALETTE.bullet;
-    ctx.shadowBlur = 14;
-    ctx.fillStyle = PALETTE.bullet;
-    roundRect(ctx, -11, -3, 22, 6, 3);
+    ctx.shadowColor = piercing ? '#fef08a' : PALETTE.bullet;
+    ctx.shadowBlur = piercing ? 18 : 14;
+    ctx.fillStyle = piercing ? '#fef9c3' : PALETTE.bullet;
+    roundRect(ctx, piercing ? -16 : -11, -3, piercing ? 32 : 22, 6, 3);
     ctx.fill();
     ctx.fillStyle = PALETTE.bulletHot;
     roundRect(ctx, -5, -1.5, 12, 3, 1.5);
@@ -231,6 +234,12 @@ export function drawWorld(ctx, state, time) {
     ctx.restore();
   }
   drawPlayer(ctx, state.player, time);
+  // Orbit drones circle the skiff.
+  if (state.mods.drones > 0 && state.player.alive) {
+    for (const slot of droneSlots(state.player, state.mods.drones, state.droneAngle)) {
+      drawDrone(ctx, slot.x, slot.y, time);
+    }
+  }
   // Shield ring.
   if (state.shields > 0 && state.player.alive) {
     const p = state.player;
@@ -272,40 +281,71 @@ export function drawHUD(ctx, state, time) {
     ctx.fill();
     ctx.restore();
   }
-  // Wave, top-center.
+  // Wave, top-center, with a progress row: one pip per wave, so the road
+  // to the final wave reads at a glance even in a small screenshot.
   ctx.textAlign = 'center';
   ctx.font = `700 26px ${FONT}`;
   ctx.fillStyle = PALETTE.text;
   ctx.shadowColor = PALETTE.wall;
   ctx.shadowBlur = 10;
-  ctx.fillText(`WAVE ${state.wave}`, VIEW_W / 2, 42);
+  ctx.fillText(`WAVE ${state.wave} / ${WAVES.finalWave}`, VIEW_W / 2, 42);
   ctx.shadowBlur = 0;
+  const pipGap = 20;
+  const pipStart = VIEW_W / 2 - ((WAVES.finalWave - 1) * pipGap) / 2;
+  for (let i = 1; i <= WAVES.finalWave; i += 1) {
+    const x = pipStart + (i - 1) * pipGap;
+    const cleared = i < state.wave;
+    const current = i === state.wave;
+    const isBoss = i % WAVES.bossEvery === 0;
+    ctx.fillStyle = cleared ? PALETTE.gold : current ? '#ffffff' : 'rgba(255, 255, 255, 0.22)';
+    if (isBoss) {
+      ctx.save();
+      ctx.translate(x, 56);
+      ctx.rotate(Math.PI / 4);
+      const s = current ? 6 : 5;
+      ctx.fillRect(-s, -s, s * 2, s * 2);
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, 56, current ? 5.5 : 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
   ctx.font = `500 13px ${FONT}`;
   ctx.fillStyle = PALETTE.textDim;
   const remaining = state.enemies.length + state.spawnQueue.length;
-  ctx.fillText(remaining > 0 ? `${remaining} HOSTILES LEFT` : 'CLEAR THE WAVE', VIEW_W / 2, 62);
+  const waveNote = state.wave === WAVES.finalWave
+    ? 'FINAL WAVE — DEFEAT THE WARDEN PRIME'
+    : remaining > 0 ? `${remaining} HOSTILES LEFT` : 'CLEAR THE WAVE';
+  ctx.fillText(waveNote, VIEW_W / 2, 76);
   // Warden health bar.
   const warden = state.enemies.find((e) => e.type === 'warden');
   if (warden) {
     const w = 420;
     const x = VIEW_W / 2 - w / 2;
-    const y = 72;
+    const y = 86;
+    const enraged = warden.phase === 2;
+    const barColor = enraged ? PALETTE.wardenRage : PALETTE.warden;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
     roundRect(ctx, x, y, w, 10, 5);
     ctx.fill();
-    ctx.fillStyle = PALETTE.warden;
-    ctx.shadowColor = PALETTE.warden;
+    ctx.fillStyle = barColor;
+    ctx.shadowColor = barColor;
     ctx.shadowBlur = 10;
     if (warden.hp > 0) {
       roundRect(ctx, x, y, w * (warden.hp / warden.maxHp), 10, 5);
       ctx.fill();
     }
     ctx.shadowBlur = 0;
+    // The rage threshold marker: a tick at half health, where phase 2 starts.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.fillRect(x + w / 2 - 1, y - 2, 2, 14);
     ctx.font = `700 13px ${FONT}`;
-    ctx.fillStyle = PALETTE.warden;
-    ctx.fillText('WARDEN', VIEW_W / 2, y + 26);
+    ctx.fillStyle = barColor;
+    const bossName = warden.prime ? 'WARDEN PRIME' : 'WARDEN';
+    ctx.fillText(enraged ? `${bossName} — ENRAGED` : bossName, VIEW_W / 2, y + 28);
   }
-  // Score + combo, top-right.
+  // Score + best + combo, top-right.
   ctx.textAlign = 'right';
   ctx.font = `500 13px ${FONT}`;
   ctx.fillStyle = PALETTE.textDim;
@@ -313,14 +353,37 @@ export function drawHUD(ctx, state, time) {
   ctx.font = `700 30px ${FONT}`;
   ctx.fillStyle = '#ffffff';
   ctx.fillText(String(state.score).padStart(6, '0'), VIEW_W - 44, 58);
+  ctx.font = `500 12px ${FONT}`;
+  ctx.fillStyle = PALETTE.textDim;
+  ctx.fillText(`BEST ${String(state.best).padStart(6, '0')}`, VIEW_W - 44, 76);
   if (state.comboKills > 0) {
     const pop = 1 + state.comboPop * 0.5;
     ctx.save();
-    ctx.translate(VIEW_W - 44, 84);
+    ctx.translate(VIEW_W - 44, 100);
     ctx.scale(pop, pop);
     ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
     ctx.fillStyle = state.comboMult >= 4 ? PALETTE.gold : PALETTE.text;
-    ctx.fillText(`COMBO x${state.comboMult}  (${state.comboKills})`, 0, 0);
+    ctx.fillText(`COMBO x${state.comboMult}  (${Math.floor(state.comboKills)})`, 0, 0);
+    ctx.restore();
+    // Combo decay bar: empties during the grace period, then the combo drains.
+    const grace = 1 - Math.min(1, state.comboTimer / COMBO.decayGrace);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+    roundRect(ctx, VIEW_W - 44 - 130, 108, 130, 5, 2.5);
+    ctx.fill();
+    ctx.fillStyle = state.comboMult >= 4 ? PALETTE.gold : PALETTE.textDim;
+    roundRect(ctx, VIEW_W - 44 - 130, 108, 130 * grace, 5, 2.5);
+    ctx.fill();
+  }
+  // Second Wind pip: a star under the hearts while the revive is held.
+  if (state.mods.secondWind && !state.secondWindUsed) {
+    ctx.save();
+    ctx.translate(52, 92);
+    ctx.font = `700 16px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = PALETTE.gold;
+    ctx.shadowColor = PALETTE.gold;
+    ctx.shadowBlur = 8;
+    ctx.fillText('★ SECOND WIND', 0, 0);
     ctx.restore();
   }
   // Dash cooldown, bottom-left.
@@ -400,18 +463,48 @@ export function drawWaveBanner(ctx, state) {
   const t = state.bannerAge;
   const alpha = state.bannerLeft < 0.4 ? state.bannerLeft / 0.4 : 1;
   const slide = Math.max(0, 1 - t * 3) * 40;
+  const isFinal = state.wave === WAVES.finalWave;
+  const isBoss = state.wave % WAVES.bossEvery === 0;
+  const headline = isFinal
+    ? 'FINAL WAVE — WARDEN PRIME'
+    : isBoss
+      ? `WAVE ${state.wave} — WARDEN`
+      : `WAVE ${state.wave}`;
+  const subline = isFinal
+    ? 'Defeat the Warden Prime to clear the sector.'
+    : state.wave === 1
+      ? 'Survive the swarm. Good luck, pilot.'
+      : isBoss
+        ? 'The Warden approaches. Watch for the burst rings.'
+        : 'Hostiles inbound. Clear them all.';
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.textAlign = 'center';
-  ctx.font = `800 64px ${FONT}`;
+  ctx.font = `800 ${isFinal ? 52 : 64}px ${FONT}`;
   ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = PALETTE.player;
+  ctx.shadowColor = isFinal ? PALETTE.gold : PALETTE.player;
   ctx.shadowBlur = 26;
-  ctx.fillText(state.wave % 5 === 0 ? `WAVE ${state.wave} — WARDEN` : `WAVE ${state.wave}`, VIEW_W / 2, 250 + slide);
+  ctx.fillText(headline, VIEW_W / 2, 250 + slide);
   ctx.shadowBlur = 0;
   ctx.font = `500 18px ${FONT}`;
   ctx.fillStyle = PALETTE.textDim;
-  ctx.fillText(state.wave === 1 ? 'Survive the swarm. Good luck, pilot.' : 'Hostiles inbound.', VIEW_W / 2, 288 + slide);
+  ctx.fillText(subline, VIEW_W / 2, 288 + slide);
+  ctx.restore();
+}
+
+// The gold strip that names the upgrade just picked, fading over the first
+// seconds of the next wave: feedback that the choice landed.
+export function drawAcquiredBanner(ctx, state) {
+  if (state.acquiredLeft <= 0 || state.state !== 'playing') return;
+  const alpha = Math.min(1, state.acquiredLeft / 0.5);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = 'center';
+  ctx.font = `700 20px ${FONT}`;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.shadowColor = PALETTE.gold;
+  ctx.shadowBlur = 14;
+  ctx.fillText(state.acquiredText, VIEW_W / 2, 128);
   ctx.restore();
 }
 
@@ -468,8 +561,12 @@ export function drawTitle(ctx, state, time) {
     // ignore
   }
   ctx.shadowBlur = 0;
+  // The goal, stated up front: ten waves, one final boss.
+  ctx.font = `700 17px ${FONT}`;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText('GOAL — CLEAR 10 WAVES AND DEFEAT THE WARDEN PRIME', VIEW_W / 2, 292);
   // Controls panel.
-  const panel = { x: 390, y: 300, w: 500, h: 148 };
+  const panel = { x: 390, y: 308, w: 500, h: 140 };
   ctx.fillStyle = 'rgba(8, 24, 44, 0.72)';
   roundRect(ctx, panel.x, panel.y, panel.w, panel.h, 14);
   ctx.fill();
@@ -502,7 +599,7 @@ export function drawTitle(ctx, state, time) {
   ctx.font = `500 14px ${FONT}`;
   ctx.fillStyle = PALETTE.textDim;
   if (state.best > 0) ctx.fillText(`BEST SCORE  ${String(state.best).padStart(6, '0')}`, VIEW_W / 2, 580);
-  ctx.fillText('Clear waves, pick upgrades, survive the Warden. An original game — all art procedural, all sound synthesised.', VIEW_W / 2, 668);
+  ctx.fillText('Clear waves, pick upgrades, dodge the lancers, and bring the Warden Prime down. An original game — all art procedural, all sound synthesised.', VIEW_W / 2, 668);
   ctx.restore();
 }
 
@@ -631,9 +728,89 @@ export function drawGameOver(ctx, state) {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(value, x, y + 28);
   });
+  // Upgrades held when the run ended, and how far the sector got.
+  ctx.textAlign = 'center';
+  ctx.font = `600 14px ${FONT}`;
+  ctx.fillStyle = PALETTE.textDim;
+  ctx.fillText('UPGRADES HELD', VIEW_W / 2, 452);
+  ctx.font = `700 22px ${FONT}`;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText(state.upgradeGlyphs.length > 0 ? state.upgradeGlyphs.join('  ') : '—', VIEW_W / 2, 480);
+  ctx.font = `500 15px ${FONT}`;
+  ctx.fillStyle = PALETTE.textDim;
+  ctx.fillText(`Sector progress: wave ${state.wave} of ${WAVES.finalWave}  ·  Tip: dash through bullet rings — the dash is briefly invulnerable.`, VIEW_W / 2, 514);
   ctx.restore();
   const hovered = pointIn(LAYOUT.restartButton, state.input.mouseX, state.input.mouseY);
   drawButton(ctx, LAYOUT.restartButton, '↻  RESTART', hovered, 'or press R');
+}
+
+export function drawVictory(ctx, state) {
+  dimScreen(ctx, 0.6);
+  const t = Math.min(1, state.victoryAge / 0.5);
+  const rise = (1 - t) * 30;
+  ctx.save();
+  ctx.globalAlpha = t;
+  ctx.translate(0, rise);
+  ctx.textAlign = 'center';
+  ctx.font = `800 62px ${FONT}`;
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = PALETTE.gold;
+  ctx.shadowBlur = 30;
+  ctx.fillText('SECTOR CLEARED!', VIEW_W / 2, 148);
+  ctx.shadowBlur = 0;
+  ctx.font = `700 22px ${FONT}`;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText('★  VICTORY — THE WARDEN PRIME IS DOWN  ★', VIEW_W / 2, 186);
+  if (state.newBest) {
+    ctx.font = `700 19px ${FONT}`;
+    ctx.fillStyle = PALETTE.gold;
+    ctx.shadowColor = PALETTE.gold;
+    ctx.shadowBlur = 14;
+    ctx.fillText('★ NEW BEST SCORE ★', VIEW_W / 2, 214);
+    ctx.shadowBlur = 0;
+  }
+  const stats = [
+    ['FINAL SCORE', String(state.score).padStart(6, '0')],
+    ['BEST', String(state.best).padStart(6, '0')],
+    ['WAVES CLEARED', `${WAVES.finalWave} / ${WAVES.finalWave}`],
+    ['KILLS', String(state.kills)],
+    ['MAX COMBO', `x${state.maxComboMult}`],
+    ['TIME', formatTime(state.runTime)],
+  ];
+  const panel = { x: 340, y: 228, w: 600, h: 196 };
+  ctx.fillStyle = 'rgba(8, 24, 44, 0.9)';
+  roundRect(ctx, panel.x, panel.y, panel.w, panel.h, 14);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(253, 230, 138, 0.55)';
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, panel.x, panel.y, panel.w, panel.h, 14);
+  ctx.stroke();
+  stats.forEach(([label, value], i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = panel.x + 60 + col * 300;
+    const y = panel.y + 46 + row * 56;
+    ctx.textAlign = 'left';
+    ctx.font = `600 14px ${FONT}`;
+    ctx.fillStyle = PALETTE.textDim;
+    ctx.fillText(label, x, y);
+    ctx.font = `700 26px ${FONT}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(value, x, y + 28);
+  });
+  ctx.textAlign = 'center';
+  ctx.font = `600 14px ${FONT}`;
+  ctx.fillStyle = PALETTE.textDim;
+  ctx.fillText('UPGRADES HELD', VIEW_W / 2, 452);
+  ctx.font = `700 22px ${FONT}`;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText(state.upgradeGlyphs.length > 0 ? state.upgradeGlyphs.join('  ') : '—', VIEW_W / 2, 480);
+  ctx.font = `500 15px ${FONT}`;
+  ctx.fillStyle = PALETTE.textDim;
+  ctx.fillText('Every wave cleared. The arena is quiet — until the next run.', VIEW_W / 2, 514);
+  ctx.restore();
+  const hovered = pointIn(LAYOUT.victoryButton, state.input.mouseX, state.input.mouseY);
+  drawButton(ctx, LAYOUT.victoryButton, '↻  PLAY AGAIN', hovered, 'or press R');
 }
 
 export function drawPaused(ctx, state) {

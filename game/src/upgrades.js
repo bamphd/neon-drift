@@ -73,6 +73,38 @@ export const UPGRADES = [
       state.player.hearts = Math.min(mods.maxHearts, state.player.hearts + 1);
     },
   },
+  {
+    id: 'pierce',
+    name: 'Lance Rounds',
+    desc: 'Shots punch through +1 enemy. Line the swarm up.',
+    glyph: '⇢',
+    max: 3,
+    apply: (mods) => { mods.pierce += 1; },
+  },
+  {
+    id: 'nova',
+    name: 'Nova Dash',
+    desc: 'Dashing releases a shockwave that wounds nearby foes.',
+    glyph: '✺',
+    max: 2,
+    apply: (mods) => { mods.novaDash += 1; },
+  },
+  {
+    id: 'drone',
+    name: 'Orbit Drone',
+    desc: 'A drone circles your skiff and fires at the nearest foe.',
+    glyph: '◉',
+    max: 2,
+    apply: (mods) => { mods.drones += 1; },
+  },
+  {
+    id: 'secondwind',
+    name: 'Second Wind',
+    desc: 'Once per run, revive with 3 hearts when destroyed.',
+    glyph: '★',
+    max: 1,
+    apply: (mods) => { mods.secondWind = true; },
+  },
 ];
 
 export function defaultMods() {
@@ -85,6 +117,10 @@ export function defaultMods() {
     speed: 1,
     magnet: 1,
     maxHearts: 5,
+    pierce: 0,
+    novaDash: 0,
+    drones: 0,
+    secondWind: false,
   };
 }
 
